@@ -49,4 +49,4 @@ if __name__ == "__main__":
     p.add_argument("--port", type=int, required=True)
     p.add_argument("--nick")
     args = p.parse_args()
-    asyncio.run(main(args.host, args.port))
+    asyncio.run(main(args.host, args.port, args.nick))
