@@ -59,7 +59,7 @@ One JSON object per line (UTF-8):
 This may evolve (see roadmap).
 
 ## Roadmap
-See `chat_project_roadmap.md` for the step-by-step plan.
+See `sandpiper_roadmap.md` for the step-by-step plan.
 
 ## License
 MIT License. Free to use and modify.
