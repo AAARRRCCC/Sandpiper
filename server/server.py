@@ -30,6 +30,8 @@ async def handle_client(reader, writer):
             if t == "nick":
                 nick = obj.get("nick", "anon")
                 reply = {"type":"notice","text":f"nick = {nick}","ts":int(time.time())}
+                writer.write((json.dumps(reply) + "\n").encode("utf-8"))
+                await writer.drain()
             elif t == "msg":
                 text = obj.get("text", "")
                 print(f"{nick}: {text}") #logging
@@ -39,11 +41,11 @@ async def handle_client(reader, writer):
                     w.write((json.dumps(out) + "\n").encode("utf-8"))
                 await asyncio.gather(*(w.drain() for w in list(clients)), return_exceptions=True) # flush all clients
             else:
-                reply = {"type":"error","text":"invalid message type","ts":int(time.time())}
+                err = {"type":"error","text":"invalid message type","ts":int(time.time())}
+                writer.write((json.dumps(err) + "\n").encode("utf-8"))
+                await writer.drain()
 
-            writer.write((json.dumps(reply) + "\n").encode("utf-8"))
-            await writer.drain()
-
+            
     finally:
         clients.discard(writer)
         writer.close()
