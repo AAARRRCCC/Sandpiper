@@ -36,10 +36,20 @@ async def handle_client(reader, writer):
             
             t = obj.get("type")
             if t == "nick":
-                nick = obj.get("nick", "anon")
-                reply = {"type":"notice","text":f"nick = {nick}","ts":int(time.time())}
+                newnick = obj.get("nick", "").strip()
+                if not newnick:
+                    err = {"type":"error","text":"invalid nick","ts":int(time.time())}
+                    writer.write((json.dumps(err) + "\n").encode("utf-8"))
+                    await writer.drain()
+                    continue
+                oldnick = nick
+                nick = newnick
+                await broadcast({"type":"notice","text":f"{oldnick} is now {nick}","ts":int(time.time())})
+                reply = {"type":"nick","text":f"nick set to {nick}","ts":int(time.time())}
                 writer.write((json.dumps(reply) + "\n").encode("utf-8"))
                 await writer.drain()
+
+
             elif t == "msg":
                 text = obj.get("text", "")
                 print(f"{nick}: {text}") #logging
