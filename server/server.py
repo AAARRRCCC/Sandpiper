@@ -4,9 +4,17 @@ import time
 
 clients = set() # global state
 
+async def broadcast(obj):
+    data = (json.dumps(obj) + "\n").encode("utf-8")
+    for w in list(clients):
+        w.write(data)
+    await asyncio.gather(*(w.drain() for w in list(clients)), return_exceptions=True) # flush all clients
+
 async def handle_client(reader, writer):
     nick = "anon" # per-connection state
     clients.add(writer)
+    await broadcast({"type":"notice","text":f"{nick} joined","ts":int(time.time())})
+
     try:
         while True: 
             data = await reader.readline()
@@ -37,9 +45,7 @@ async def handle_client(reader, writer):
                 print(f"{nick}: {text}") #logging
                 # broadcasts to all clients INCLUDING sender (so they can see it obviously)
                 out = {"type":"msg","nick":nick,"text":text,"ts":int(time.time())}
-                for w in list(clients):
-                    w.write((json.dumps(out) + "\n").encode("utf-8"))
-                await asyncio.gather(*(w.drain() for w in list(clients)), return_exceptions=True) # flush all clients
+                await broadcast(out)
             else:
                 err = {"type":"error","text":"invalid message type","ts":int(time.time())}
                 writer.write((json.dumps(err) + "\n").encode("utf-8"))
@@ -47,6 +53,7 @@ async def handle_client(reader, writer):
 
             
     finally:
+        await broadcast({"type":"notice","text":f"{nick} left","ts":int(time.time())})
         clients.discard(writer)
         writer.close()
         await writer.wait_closed()
