@@ -4,13 +4,13 @@ Sandpiper is a minimal terminal chat system. A Python relay server runs on a hos
 
 > Status: early WIP. This README will expand as I implement features.
 
-## Goals (initial)
+## Goals
 - Simple: Python 3.10+ with asyncio TCP sockets
 - Portable: runs on Linux/macOS/Windows terminals
 - Reachable: works over LAN or via `ngrok tcp`
 - Minimal protocol: newline-delimited JSON messages
 
-## Repo Layout (proposed)
+## Repo Layout
 ```
 .
 ├── server/
@@ -51,7 +51,7 @@ Clients connect using **exactly** that host and port:
 python3 client/client.py --host 2.tcp.ngrok.io --port 17832 --nick alice
 ```
 
-## Minimal Protocol (draft)
+## Minimal Protocol
 One JSON object per line (UTF-8):
 ```
 {"type":"msg","nick":"alice","text":"hello","ts":1731812345}
