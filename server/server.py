@@ -38,8 +38,6 @@ async def handle_client(reader, writer):
                 for w in list(clients):
                     w.write((json.dumps(out) + "\n").encode("utf-8"))
                 await asyncio.gather(*(w.drain() for w in list(clients)), return_exceptions=True) # flush all clients
-
-                reply = {"type":"notice","text":"ok","ts":int(time.time())}
             else:
                 reply = {"type":"error","text":"invalid message type","ts":int(time.time())}
 
