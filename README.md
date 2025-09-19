@@ -19,6 +19,7 @@ Sandpiper is a minimal terminal chat system. A Python relay server runs on a hos
 │   └── client.py
 ├── requirements.txt
 ├── README.md
+├── LICENSE
 └── chat_project_roadmap.md
 ```
 
