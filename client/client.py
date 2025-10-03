@@ -2,79 +2,88 @@ import asyncio
 import json
 import argparse
 import contextlib
-from datetime import datetime
-import os
-import hashlib
-import colorsys
 
-# ANSI basics
+# --- Color and formatting utilities ---
 C_RESET = "\033[0m"
-C_BOLD  = "\033[1m"
-C_RED   = "\033[31m"
+C_RED = "\033[31m"
 C_GREEN = "\033[32m"
-C_YELLOW= "\033[33m"
-C_BLUE  = "\033[34m"
-
-# Cache so we don't recompute per message
-_COLOR_CACHE: dict[str, str] = {}
-
-def _supports_truecolor() -> bool:
-    ct = os.environ.get("COLORTERM", "").lower()
-    return "truecolor" in ct or "24bit" in ct
-
-def _nick_color_code(nick: str) -> str:
-    """Stable 'random' color per nick using hash→HLS→RGB. 24-bit if possible, else 256-color."""
-    if not nick:
-        return C_BLUE
-
-    if nick in _COLOR_CACHE:
-        return _COLOR_CACHE[nick]
-
-    # Stable 32-bit hash
-    hbytes = hashlib.blake2b(nick.encode("utf-8"), digest_size=4).digest()
-    seed = int.from_bytes(hbytes, "big")
-
-    # Hue from 0..359, with seeded saturation/lightness in readable ranges
-    hue = seed % 360
-    # colorsys uses H, L, S in [0,1]
-    # Keep lightness mid and saturation fairly high for readability
-    sat = 0.70 + ((seed >> 10) & 0x7) / 31.0 * 0.15   # 0.70..0.85
-    lig = 0.50 + ((seed >> 17) & 0x7) / 31.0 * 0.10   # 0.50..0.60
-
-    r, g, b = colorsys.hls_to_rgb(hue/360.0, lig, sat)
-    R, G, B = int(r*255), int(g*255), int(b*255)
-
-    if _supports_truecolor():
-        code = f"\033[38;2;{R};{G};{B}m"
-    else:
-        # Map to ANSI 256 color cube (16..231). Avoid too-dark/grayscale.
-        def to_ansi_step(v: int) -> int:
-            return max(1, min(5, round(v/255*5)))  # clamp 1..5 to avoid near-black
-        r5, g5, b5 = to_ansi_step(R), to_ansi_step(G), to_ansi_step(B)
-        idx = 16 + 36*r5 + 6*g5 + b5
-        code = f"\033[38;5;{idx}m"
-
-    _COLOR_CACHE[nick] = code
-    return code
+C_YELLOW = "\033[33m"
+C_CYAN = "\033[36m"
 
 def format_message(obj):
-    ts = datetime.fromtimestamp(obj.get('ts', 0)).strftime('%H:%M:%S')
-    nick = obj.get('nick', '')
-    text = obj.get('text', '')
-    msg_type = obj.get('type', '')
-
-    if msg_type == 'msg':
-        color_code = _nick_color_code(nick)
-        return f"<{ts}> {color_code}{C_BOLD}{nick}{C_RESET}: {text}"
-    elif msg_type == 'notice':
-        return f"<{ts}> {C_YELLOW}* {text} *{C_RESET}"
-    elif msg_type == 'nick':
-        return f"<{ts}> {C_GREEN}* {text} *{C_RESET}"
-    elif msg_type == 'error':
-        return f"<{ts}> {C_RED}! error: {text}{C_RESET}"
+    t = obj.get("type")
+    if t == "msg":
+        nick = obj.get("nick", "anon")
+        text = obj.get("text", "")
+        return f"{C_CYAN}{nick}{C_RESET}: {text}"
+    elif t == "notice":
+        return f"{C_YELLOW}[notice]{C_RESET} {obj.get('text','')}"
+    elif t == "error":
+        return f"{C_RED}[error]{C_RESET} {obj.get('text','')}"
+    elif t == "nick":
+        return f"{C_GREEN}[nick]{C_RESET} {obj.get('text','')}"
     else:
-        return json.dumps(obj)
+        return f"{C_RED}[?]{C_RESET} {obj}"
 
+# --- P2P additions ---
+peers = {}  # Track other clients: { (host, port): (reader, writer) }
+
+async def connect_to_peer(host, port):
+    # Make direct TCP connection to another client
+    try:
+        reader, writer = await asyncio.open_connection(host, port)
+        # Simple handshake: send our nick (or anon)
+        nick = getattr(connect_to_peer, "nick", "anon")
+        writer.write((json.dumps({"type": "hello", "nick": nick}) + "\n").encode("utf-8"))
+        await writer.drain()
+        # Wait for their hello
+        data = await reader.readline()
+        if not data:
+            raise Exception("No handshake reply")
+        obj = json.loads(data.decode("utf-8", errors="replace").rstrip("\n"))
+        if obj.get("type") != "hello":
+            raise Exception("Invalid handshake")
+        peer_nick = obj.get("nick", "anon")
+        peers[(host, port)] = (reader, writer)
+        # Start receiving from this peer
+        asyncio.create_task(peer_recv_loop(reader, (host, port), peer_nick))
+    except Exception as e:
+        print(f"[P2P] Error connecting to peer {host}:{port}: {e}")
+
+async def broadcast_to_peers(message):
+    # Send message to all connected peers
+    data = (json.dumps(message) + "\n").encode("utf-8")
+    for (host, port), (reader, writer) in list(peers.items()):
+        try:
+            writer.write(data)
+            await writer.drain()
+        except Exception as e:
+            print(f"[P2P] Failed to send to {host}:{port}: {e}")
+            # Optionally remove dead peer
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+            peers.pop((host, port), None)
+
+async def peer_recv_loop(reader, peer_addr, peer_nick):
+    while True:
+        try:
+            data = await reader.readline()
+            if not data:
+                print(f"[P2P] Peer {peer_addr} disconnected")
+                break
+            line = data.decode("utf-8", errors="replace").rstrip("\n")
+            try:
+                obj = json.loads(line)
+                print(format_message(obj))
+            except json.JSONDecodeError:
+                print(f"[P2P] Invalid data from {peer_addr}: {line}")
+        except Exception as e:
+            print(f"[P2P] Error in peer_recv_loop for {peer_addr}: {e}")
+            break
+    peers.pop(peer_addr, None)
 async def recv_loop(reader):
     while True:
         data = await reader.readline()
@@ -99,6 +108,7 @@ async def send_loop(writer):
         await writer.drain()
 
 async def main(host, port, nick):
+    # For now, keep original client-server logic
     reader, writer = await asyncio.open_connection(host, port)
     print(f"connected to {host}:{port}")
     print(format_message({"type":"notice","text":"Type /quit to exit"}))
@@ -123,8 +133,89 @@ async def main(host, port, nick):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--host", required=True)
-    p.add_argument("--port", type=int, required=True)
+    p.add_argument("--host")
+    p.add_argument("--port", type=int)
     p.add_argument("--nick")
+    # P2P options
+    p.add_argument("--p2p", action="store_true", help="Enable P2P mode")
+    p.add_argument("--bootstrap", action="store_true", help="Run as bootstrap peer (listen for others)")
+    p.add_argument("--peer", action="append", help="Peer address host:port (can specify multiple)")
     args = p.parse_args()
-    asyncio.run(main(args.host, args.port, args.nick))
+
+    # For now, default to original client-server mode
+    if not args.p2p:
+        asyncio.run(main(args.host, args.port, args.nick))
+    else:
+        import sys
+
+        async def p2p_main():
+            # Set nick for handshake
+            connect_to_peer.nick = args.nick or "anon"
+
+            # If bootstrap, listen for incoming peer connections
+            if args.bootstrap:
+                server = await asyncio.start_server(handle_peer, host="0.0.0.0", port=args.port)
+                print(f"[P2P] Bootstrap listening on 0.0.0.0:{args.port}")
+            else:
+                server = None
+
+            # Connect to peers specified via --peer
+            if args.peer:
+                for peer_addr in args.peer:
+                    try:
+                        host, port = peer_addr.split(":")
+                        await connect_to_peer(host, int(port))
+                        print(f"[P2P] Connected to peer {host}:{port}")
+                    except Exception as e:
+                        print(f"[P2P] Failed to connect to peer {peer_addr}: {e}")
+
+            print(format_message({"type":"notice","text":"Type /quit to exit (P2P mode)"}))
+
+            # Main P2P chat loop: send user input to all peers
+            while True:
+                text = await asyncio.to_thread(input)
+                print("\033[1A\033[2K", end="", flush=True)
+                if text.strip() == "/quit":
+                    break
+                msg = {"type": "msg", "nick": args.nick or "anon", "text": text}
+                await broadcast_to_peers(msg)
+
+            # Graceful shutdown
+            for (host, port), (reader, writer) in list(peers.items()):
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+            if server:
+                server.close()
+                await server.wait_closed()
+
+        async def handle_peer(reader, writer):
+            # Accept incoming peer connection
+            addr = writer.get_extra_info("peername")
+            print(f"[P2P] Peer connected from {addr}")
+            # Handshake: receive their hello
+            data = await reader.readline()
+            if not data:
+                writer.close()
+                await writer.wait_closed()
+                return
+            obj = json.loads(data.decode("utf-8", errors="replace").rstrip("\n"))
+            if obj.get("type") != "hello":
+                writer.close()
+                await writer.wait_closed()
+                return
+            peer_nick = obj.get("nick", "anon")
+            # Send our hello
+            writer.write((json.dumps({"type": "hello", "nick": args.nick or "anon"}) + "\n").encode("utf-8"))
+            await writer.drain()
+            # Add to peers and start receiving
+            peer_addr = addr if addr else ("unknown", 0)
+            peers[peer_addr] = (reader, writer)
+            asyncio.create_task(peer_recv_loop(reader, peer_addr, peer_nick))
+
+        try:
+            asyncio.run(p2p_main())
+        except KeyboardInterrupt:
+            print("[P2P] Shutting down.")
